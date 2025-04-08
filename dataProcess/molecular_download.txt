@@ -1,0 +1,75 @@
+library(TCGAbiolinks)
+library(SummarizedExperiment)
+library(stringr)
+library(progress)
+library(biomaRt)
+
+download_and_process_tcga <- function(project, base_dir) {
+  dir.create(base_dir, showWarnings = FALSE)
+  dir.create(file.path(base_dir, "DNA"), showWarnings = FALSE)
+  dir.create(file.path(base_dir, "RNA"), showWarnings = FALSE)
+
+  # DNA数据下载
+  dna_file <- file.path(base_dir, "DNA", paste0(project, "_Dnaseq.rds"))
+  if (!file.exists(dna_file)) {
+    gdcDNA <- GDCquery(
+      project = project,
+      data.category = "Simple Nucleotide Variation",
+      data.type = "Masked Somatic Mutation",
+      workflow.type = "Aliquot Ensemble Somatic Variant Merging and Masking"
+    )
+    
+    cat("Downloading DNA data for", project, "...\n")
+    GDCdownload(query = gdcDNA, method = 'api', files.per.chunk = 10, dir = file.path(base_dir, "DNA"))
+    
+    # 准备 DNA 数据
+    GBM_Dnaseq <- GDCprepare(gdcDNA, directory = file.path(base_dir, "DNA"))
+    saveRDS(GBM_Dnaseq, dna_file)
+  } else {
+    cat("DNA data for", project, "already exists. Skipping download...\n")
+  }
+
+  # RNA数据下载
+  rna_file <- file.path(base_dir, "RNA", paste0(project, "_Rnaseq_matrix.rds"))
+  if (!file.exists(rna_file)) {
+    gdcRNA <- GDCquery(
+      project = project,
+      data.category = "Transcriptome Profiling",
+      data.type = "Gene Expression Quantification",
+      experimental.strategy = "RNA-Seq",
+      workflow.type = "STAR - Counts"
+    )
+    
+    cat("Downloading RNA data for", project, "...\n")
+    GDCdownload(query = gdcRNA, method = 'api', files.per.chunk = 10, dir = file.path(base_dir, "RNA"))
+    
+    # 准备 RNA 数据
+    GBM_Rnaseq <- GDCprepare(gdcRNA, directory = file.path(base_dir, "RNA"))
+    GBM_count_matrix <- assay(GBM_Rnaseq)
+    
+    gene_name_all <- GBM_Rnaseq@rowRanges@elementMetadata@listData$gene_name
+    rownames(GBM_count_matrix) <- gene_name_all
+    saveRDS(GBM_count_matrix, rna_file)
+    
+    # 基因注释使用 biomaRt
+    ensembl_ids <- str_replace(rownames(GBM_count_matrix), "\\..*", "")
+    
+    # 连接到 ENSEMBL 数据库
+    ensembl <- useMart("ensembl", dataset = "hsapiens_gene_ensembl")
+    
+    gene_name <- getBM(attributes = c("ensembl_gene_id", "hgnc_symbol"), 
+                       filters = "ensembl_gene_id", 
+                       values = ensembl_ids, 
+                       mart = ensembl)
+    
+    saveRDS(gene_name, file.path(base_dir, "RNA", paste0(project, "_gene_annotation.rds")))
+  } else {
+    cat("RNA data for", project, "already exists. Skipping download...\n")
+  }
+}
+
+
+project <- "TCGA-GBM"
+base_dir <- file.path("/csb1/guest/sunfeifei/data/Molecular", gsub("TCGA-", "", project))
+
+download_and_process_tcga(project, base_dir)
